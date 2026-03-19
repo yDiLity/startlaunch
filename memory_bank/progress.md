@@ -62,5 +62,5 @@
 ## Контроль изменений
 
 ```
-last_checked_commit: e839464
+last_checked_commit: 3c218e0
 ```
