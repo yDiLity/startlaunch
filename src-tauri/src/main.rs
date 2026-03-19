@@ -31,6 +31,9 @@ mod database_property_test;
 #[cfg(test)]
 mod project_analyzer_property_test;
 
+#[cfg(test)]
+mod settings_manager_property_test;
+
 use commands::*;
 use database::Database;
 use std::sync::Arc;

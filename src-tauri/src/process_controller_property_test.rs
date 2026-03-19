@@ -1,9 +1,7 @@
 // Property-based тесты для контроллера процессов (Задача 5.1)
 // Используется библиотека proptest для Rust
 
-#[cfg(test)]
-mod property_tests {
-    use crate::process_controller::ProcessController;
+use crate::process_controller::ProcessController;
     use crate::environment_manager::{EnvironmentManager, Environment, IsolationMode, DockerConfig, VirtualEnvConfig};
     use crate::models::{ProjectInfo, TechStack, TrustLevel, ExecutionStatus};
     use proptest::prelude::*;
@@ -416,4 +414,3 @@ mod property_tests {
             })?;
         }
     }
-}
