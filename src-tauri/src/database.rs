@@ -343,3 +343,8 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    include!("project_manager_property_test.rs");
+}

@@ -403,13 +403,229 @@ use crate::process_controller::ProcessController;
                 let elapsed = start.elapsed();
                 
                 // Требование 6.2: Остановка должна завершиться в разумное время
-                // (с учетом таймаута 10 секунд для Docker и 2 секунды для SIGTERM)
                 prop_assert!(
                     elapsed.as_secs() < 15,
                     "Остановка процесса должна завершиться менее чем за 15 секунд, заняло: {:?}",
                     elapsed
                 );
                 
+                Ok(())
+            })?;
+        }
+    }
+
+    // **Feature: autolaunch-core, Property 15: Эквивалентность перезапуска**
+    // **Validates: Requirements 6.3**
+    //
+    // Для любого запущенного проекта, операция перезапуска должна быть
+    // эквивалентна последовательности остановка + запуск
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn test_property_restart_equivalent_to_stop_start(
+            command in command_strategy()
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let controller = ProcessController::new();
+                let env = create_direct_environment();
+
+                // Запускаем процесс
+                let handle = controller.start_process(&env, &command).await?;
+                sleep(Duration::from_millis(500)).await;
+
+                let pid_before = handle.pid;
+
+                // Перезапускаем процесс (Требование 6.3)
+                let restart_result = controller.restart_process(&handle).await;
+                prop_assert!(
+                    restart_result.is_ok(),
+                    "Перезапуск процесса должен быть успешным"
+                );
+
+                sleep(Duration::from_millis(800)).await;
+
+                // После перезапуска должен быть новый процесс
+                let running = controller.get_running_processes();
+                prop_assert!(
+                    !running.is_empty(),
+                    "После перезапуска должен быть хотя бы один запущенный процесс"
+                );
+
+                // Останавливаем все
+                controller.stop_all_processes().await?;
+                Ok(())
+            })?;
+        }
+
+        #[test]
+        fn test_property_restart_cleans_old_process(
+            command in command_strategy()
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let controller = ProcessController::new();
+                let env = create_direct_environment();
+
+                let handle = controller.start_process(&env, &command).await?;
+                sleep(Duration::from_millis(500)).await;
+
+                // Перезапускаем
+                controller.restart_process(&handle).await?;
+                sleep(Duration::from_millis(800)).await;
+
+                // Старый handle должен быть остановлен
+                let old_status = controller.get_process_status(&handle).await?;
+                prop_assert!(
+                    matches!(old_status, ExecutionStatus::Stopped),
+                    "Старый процесс должен быть остановлен после перезапуска, статус: {:?}",
+                    old_status
+                );
+
+                controller.stop_all_processes().await?;
+                Ok(())
+            })?;
+        }
+
+        #[test]
+        fn test_property_restart_multiple_times(
+            command in command_strategy(),
+            restarts in 1usize..4usize
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let controller = ProcessController::new();
+                let env = create_direct_environment();
+
+                let handle = controller.start_process(&env, &command).await?;
+                sleep(Duration::from_millis(300)).await;
+
+                // Перезапускаем несколько раз
+                for _ in 0..restarts {
+                    let result = controller.restart_process(&handle).await;
+                    prop_assert!(
+                        result.is_ok(),
+                        "Каждый перезапуск должен быть успешным"
+                    );
+                    sleep(Duration::from_millis(300)).await;
+                }
+
+                controller.stop_all_processes().await?;
+                Ok(())
+            })?;
+        }
+    }
+
+    // **Feature: autolaunch-core, Property 16: Автоматическая очистка ресурсов**
+    // **Validates: Requirements 6.4**
+    //
+    // Для любого остановленного проекта, все временные ресурсы (файлы, контейнеры)
+    // должны быть автоматически очищены
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn test_property_temp_files_cleaned_after_stop(
+            stack in tech_stack_strategy()
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let controller = ProcessController::new();
+                let temp_dir = TempDir::new().unwrap();
+                let working_dir = temp_dir.path().to_path_buf();
+
+                // Создаём временные файлы, которые должны быть очищены
+                let autolaunch_temp = working_dir.join(".autolaunch_temp");
+                std::fs::create_dir_all(&autolaunch_temp).unwrap();
+                std::fs::write(autolaunch_temp.join("test.tmp"), b"temp data").unwrap();
+
+                let env = Environment {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    mode: IsolationMode::Direct(VirtualEnvConfig {
+                        working_dir: working_dir.clone(),
+                        env_vars: vec![],
+                    }),
+                    working_dir: working_dir.clone(),
+                    container_id: None,
+                };
+
+                let handle = controller.start_process(&env, "sleep 5").await?;
+                sleep(Duration::from_millis(300)).await;
+
+                // Требование 6.4: Останавливаем — должна произойти автоочистка
+                controller.stop_process(&handle).await?;
+                sleep(Duration::from_millis(500)).await;
+
+                prop_assert!(
+                    !autolaunch_temp.exists(),
+                    "Временная директория .autolaunch_temp должна быть удалена"
+                );
+
+                Ok(())
+            })?;
+        }
+
+        #[test]
+        fn test_property_no_running_processes_after_cleanup(
+            num_processes in 1usize..4usize
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let controller = ProcessController::new();
+
+                // Запускаем несколько процессов
+                for _ in 0..num_processes {
+                    let env = create_direct_environment();
+                    controller.start_process(&env, "sleep 30").await?;
+                }
+
+                sleep(Duration::from_millis(300)).await;
+
+                // Останавливаем все
+                controller.stop_all_processes().await?;
+                sleep(Duration::from_millis(500)).await;
+
+                // Требование 6.4: После очистки не должно быть запущенных процессов
+                prop_assert!(
+                    !controller.has_running_processes(),
+                    "После остановки всех процессов не должно быть запущенных"
+                );
+
+                let running = controller.get_running_processes();
+                prop_assert_eq!(
+                    running.len(),
+                    0,
+                    "Список запущенных процессов должен быть пустым"
+                );
+
+                Ok(())
+            })?;
+        }
+
+        #[test]
+        fn test_property_cleanup_idempotent(
+            command in command_strategy()
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let controller = ProcessController::new();
+                let env = create_direct_environment();
+
+                let handle = controller.start_process(&env, &command).await?;
+                sleep(Duration::from_millis(300)).await;
+
+                // Останавливаем дважды — очистка должна быть идемпотентной
+                controller.stop_process(&handle).await?;
+                let second_stop = controller.stop_process(&handle).await;
+
+                prop_assert!(
+                    second_stop.is_ok(),
+                    "Повторная остановка/очистка должна быть безопасной"
+                );
+
                 Ok(())
             })?;
         }

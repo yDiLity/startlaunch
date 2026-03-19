@@ -12,3 +12,8 @@ pub mod error;
 
 pub use commands::*;
 pub use error::*;
+
+#[cfg(test)]
+mod ui_property_tests {
+    include!("ui_property_test.rs");
+}

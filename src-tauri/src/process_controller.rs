@@ -145,6 +145,12 @@ impl ProcessController {
         }
     }
 
+    /// Публичный хелпер для тестирования детекции портов
+    #[cfg(test)]
+    pub fn detect_ports_from_command_test(&self, command: &str) -> Vec<u16> {
+        self.detect_ports_from_command(command)
+    }
+
     fn detect_ports_from_command(&self, command: &str) -> Vec<u16> {
         let mut ports = Vec::new();
         
@@ -482,4 +488,9 @@ mod tests {
 #[cfg(test)]
 mod property_tests {
     include!("process_controller_property_test.rs");
+}
+
+#[cfg(test)]
+mod port_property_tests {
+    include!("process_controller_port_property_test.rs");
 }

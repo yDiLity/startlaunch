@@ -272,3 +272,8 @@ impl SnapshotManager {
 #[cfg(test)]
 #[path = "snapshot_manager_test.rs"]
 mod tests;
+
+#[cfg(test)]
+mod property_tests {
+    include!("snapshot_manager_property_test.rs");
+}
