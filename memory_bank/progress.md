@@ -60,5 +60,5 @@
 ## Контроль изменений
 
 ```
-last_checked_commit: pending_commit
+last_checked_commit: 2e07282
 ```
