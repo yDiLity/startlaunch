@@ -28,6 +28,12 @@ pub struct ProjectInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisResult {
+    pub project_id: String,
+    pub project_info: ProjectInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TechStack {
     NodeJs { version: Option<String> },
     Python { version: Option<String> },
@@ -111,6 +117,16 @@ impl ToString for TrustLevel {
     }
 }
 
+impl TrustLevel {
+    pub fn from_stored_value(value: &str) -> Self {
+        match value.to_lowercase().as_str() {
+            "trusted" => Self::Trusted,
+            "untrusted" => Self::Untrusted,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExecutionStatus {
     Preparing,
@@ -135,6 +151,17 @@ pub struct LogEntry {
     pub timestamp: DateTime<Utc>,
     pub level: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectStatusResponse {
+    pub running: bool,
+    pub status: String,
+    pub process_id: Option<String>,
+    pub container_id: Option<String>,
+    pub ports: Vec<u16>,
+    pub detected_port: Option<u16>,
+    pub environment_type: Option<String>,
 }
 
 // Модели для снимков проектов (Требование 7)

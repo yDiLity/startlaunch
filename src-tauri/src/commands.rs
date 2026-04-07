@@ -1,5 +1,5 @@
 use crate::error::{AutoLaunchError, ErrorContext, Result};
-use crate::models::{Project, ProjectInfo, TechStack, TrustLevel, ProcessHandle, ExecutionStatus, SecurityWarning, EnvironmentType};
+use crate::models::{AnalysisResult, EnvironmentType, ExecutionStatus, ProcessHandle, Project, ProjectInfo, ProjectStatusResponse, SecurityWarning, TechStack, TrustLevel};
 use crate::project_analyzer::ProjectAnalyzer;
 use crate::environment_manager::EnvironmentManager;
 use crate::process_controller::ProcessController;
@@ -30,7 +30,7 @@ lazy_static::lazy_static! {
 pub async fn analyze_repository(
     url: String,
     state: State<'_, AppState>,
-) -> std::result::Result<ProjectInfo, ErrorContext> {
+) -> std::result::Result<AnalysisResult, ErrorContext> {
     let result = analyze_repository_impl(url, state).await;
     match result {
         Ok(info) => Ok(info),
@@ -38,7 +38,7 @@ pub async fn analyze_repository(
     }
 }
 
-async fn analyze_repository_impl(url: String, state: State<'_, AppState>) -> Result<ProjectInfo> {
+async fn analyze_repository_impl(url: String, state: State<'_, AppState>) -> Result<AnalysisResult> {
     tracing::info!("Начало анализа репозитория: {}", url);
     
     // Парсим и нормализуем URL (Требование 1.1, 1.2, 1.3)
@@ -53,18 +53,30 @@ async fn analyze_repository_impl(url: String, state: State<'_, AppState>) -> Res
     // Анализируем проект
     tracing::info!("Анализ структуры проекта");
     let analyzer = ProjectAnalyzer::new();
-    let project_info = analyzer.analyze_project(&local_path)?;
+    let mut project_info = analyzer.analyze_project(&local_path)?;
+
+    let is_trusted = {
+        let scanner = SECURITY_SCANNER.lock().unwrap();
+        scanner.is_trusted_repository(&repo_info.normalized_url)
+    };
+    let trust_level = if is_trusted {
+        TrustLevel::Trusted
+    } else {
+        TrustLevel::Unknown
+    };
+    project_info.trust_level = trust_level.clone();
     tracing::info!("Обнаружен стек: {:?}", project_info.stack);
     
     // Сохраняем информацию о проекте в БД (Требование 1.5)
+    let project_id = Uuid::new_v4().to_string();
     let project = Project {
-        id: Uuid::new_v4().to_string(),
+        id: project_id.clone(),
         github_url: repo_info.normalized_url,
         owner: repo_info.owner,
         repo_name: repo_info.repo_name,
         local_path: local_path.to_string_lossy().to_string(),
         detected_stack: project_info.stack.to_string(),
-        trust_level: TrustLevel::Unknown.to_string(),
+        trust_level: trust_level.to_string(),
         created_at: Utc::now().to_rfc3339(),
         last_run_at: None,
         tags: "[]".to_string(),
@@ -74,7 +86,10 @@ async fn analyze_repository_impl(url: String, state: State<'_, AppState>) -> Res
     db.save_project(&project).await?;
     
     tracing::info!("Анализ репозитория завершен успешно");
-    Ok(project_info)
+    Ok(AnalysisResult {
+        project_id,
+        project_info,
+    })
 }
 
 async fn clone_repository(url: &str, owner: &str, repo_name: &str) -> Result<PathBuf> {
@@ -105,16 +120,21 @@ async fn clone_repository(url: &str, owner: &str, repo_name: &str) -> Result<Pat
 #[tauri::command]
 pub async fn start_project(
     project_id: String,
+    command_override: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<String, ErrorContext> {
-    let result = start_project_impl(project_id, state).await;
+    let result = start_project_impl(project_id, command_override, state).await;
     match result {
         Ok(message) => Ok(message),
         Err(e) => Err(ErrorContext::from(e)),
     }
 }
 
-async fn start_project_impl(project_id: String, state: State<'_, AppState>) -> Result<String> {
+async fn start_project_impl(
+    project_id: String,
+    command_override: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String> {
     // Получаем информацию о проекте из БД
     let project = {
         let db = state.db.lock().await;
@@ -125,14 +145,17 @@ async fn start_project_impl(project_id: String, state: State<'_, AppState>) -> R
     // Анализируем проект заново для получения актуальной информации
     let analyzer = ProjectAnalyzer::new();
     let project_path = PathBuf::from(&project.local_path);
-    let project_info = analyzer.analyze_project(&project_path)?;
+    let mut project_info = analyzer.analyze_project(&project_path)?;
+    project_info.trust_level = TrustLevel::from_stored_value(&project.trust_level);
 
     // Создаем окружение
     let environment = ENVIRONMENT_MANAGER.create_environment(&project_info, &project_path).await?;
 
     // Определяем команду запуска
-    let start_command = project_info.entry_command
-        .unwrap_or_else(|| "echo 'Команда запуска не определена'".to_string());
+    let start_command = command_override
+        .filter(|command| !command.trim().is_empty())
+        .or(project_info.entry_command.clone())
+        .ok_or_else(|| AutoLaunchError::InvalidInput("Не удалось определить команду запуска. Укажите ее вручную.".to_string()))?;
 
     // Запускаем процесс
     let process_handle = PROCESS_CONTROLLER.start_process(&environment, &start_command).await?;
@@ -433,7 +456,7 @@ async fn reset_settings_to_defaults_impl() -> Result<()> {
 #[tauri::command]
 pub async fn get_project_status(
     project_id: String,
-) -> std::result::Result<serde_json::Value, ErrorContext> {
+) -> std::result::Result<ProjectStatusResponse, ErrorContext> {
     let result = get_project_status_impl(project_id).await;
     match result {
         Ok(status) => Ok(status),
@@ -441,30 +464,35 @@ pub async fn get_project_status(
     }
 }
 
-async fn get_project_status_impl(project_id: String) -> Result<serde_json::Value> {
+async fn get_project_status_impl(project_id: String) -> Result<ProjectStatusResponse> {
     let running_projects = RUNNING_PROJECTS.lock().unwrap();
     
     if let Some((environment, process_handle)) = running_projects.get(&project_id) {
         let status = PROCESS_CONTROLLER.get_process_status(process_handle).await?;
         let port = PROCESS_CONTROLLER.detect_application_port(process_handle).await?;
         
-        Ok(serde_json::json!({
-            "running": true,
-            "status": format!("{:?}", status),
-            "process_id": process_handle.id,
-            "container_id": process_handle.container_id,
-            "ports": process_handle.ports,
-            "detected_port": port,
-            "environment_type": match environment.mode {
-                crate::environment_manager::IsolationMode::Sandbox(_) => "docker",
-                crate::environment_manager::IsolationMode::Direct(_) => "direct"
-            }
-        }))
+        Ok(ProjectStatusResponse {
+            running: true,
+            status: format!("{:?}", status),
+            process_id: Some(process_handle.id.clone()),
+            container_id: process_handle.container_id.clone(),
+            ports: process_handle.ports.clone(),
+            detected_port: port,
+            environment_type: Some(match environment.mode {
+                crate::environment_manager::IsolationMode::Sandbox(_) => "docker".to_string(),
+                crate::environment_manager::IsolationMode::Direct(_) => "direct".to_string(),
+            }),
+        })
     } else {
-        Ok(serde_json::json!({
-            "running": false,
-            "status": "stopped"
-        }))
+        Ok(ProjectStatusResponse {
+            running: false,
+            status: "stopped".to_string(),
+            process_id: None,
+            container_id: None,
+            ports: Vec::new(),
+            detected_port: None,
+            environment_type: None,
+        })
     }
 }
 
@@ -620,15 +648,16 @@ async fn get_trusted_repositories_impl(state: State<'_, AppState>) -> Result<Vec
 #[tauri::command]
 pub async fn restart_project(
     project_id: String,
+    command_override: Option<String>,
 ) -> std::result::Result<(), ErrorContext> {
-    let result = restart_project_impl(project_id).await;
+    let result = restart_project_impl(project_id, command_override).await;
     match result {
         Ok(_) => Ok(()),
         Err(e) => Err(ErrorContext::from(e)),
     }
 }
 
-async fn restart_project_impl(project_id: String) -> Result<()> {
+async fn restart_project_impl(project_id: String, command_override: Option<String>) -> Result<()> {
     // Получаем handle процесса
     let process_handle = {
         let running_projects = RUNNING_PROJECTS.lock().unwrap();
@@ -638,7 +667,20 @@ async fn restart_project_impl(project_id: String) -> Result<()> {
     };
 
     // Перезапускаем процесс (Требование 6.3: Перезапуск = остановка + запуск)
-    PROCESS_CONTROLLER.restart_process(&process_handle).await?;
+    let new_handle = PROCESS_CONTROLLER.restart_process(&process_handle, command_override).await?;
+
+    let environment = {
+        let running_projects = RUNNING_PROJECTS.lock().unwrap();
+        running_projects
+            .get(&project_id)
+            .map(|(env, _)| env.clone())
+            .ok_or_else(|| AutoLaunchError::Process("Окружение проекта не найдено после перезапуска".to_string()))?
+    };
+
+    {
+        let mut running_projects = RUNNING_PROJECTS.lock().unwrap();
+        running_projects.insert(project_id, (environment, new_handle));
+    }
 
     Ok(())
 }

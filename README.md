@@ -47,25 +47,25 @@ AutoLaunch — это кроссплатформенное десктопное 
 
 2. Установите зависимости:
    ```bash
-   npm install
+   bun install
    ```
 
 3. Запустите веб-версию для разработки:
    ```bash
-   npm run dev
+   bun run dev
    ```
    Откройте http://localhost:1420 в браузере
 
 4. Запустите Tauri приложение (требует Rust):
    ```bash
-   npm run tauri dev
+   bun run tauri dev
    ```
 
 ### Сборка для продакшена
 
 ```bash
-npm run build
-npm run tauri build
+bun run build
+bun run tauri build
 ```
 
 ## Архитектура

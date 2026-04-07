@@ -2,8 +2,6 @@
 
 ## Что готово
 
-## Что готово
-
 ### D14: Финальная проверка ✅
 
 - TypeScript: только warnings (неиспользуемые переменные) — не критично
@@ -48,7 +46,7 @@
 
 ## Known Issues
 
-- Нет
+- Сборка Tauri требует Visual Studio с компонентом "Desktop development with C++" (link.exe не найден)
 
 ## Changelog
 
@@ -68,9 +66,14 @@
 | 2026-03-19 | Все задачи tasks.md завершены                                    |
 | 2026-03-20 | D14: Финальная проверка — завершена (100%)                       |
 | 2026-03-24 | Обновлён AGENTS.md, исправлены Project Deliverables (сумма=100)   |
+| 2026-03-24 | Удалены мок-функции из App.tsx, подключён реальный invoke из Tauri |
+| 2026-03-24 | Исправлены TypeScript ошибки (LogEntry, SecurityWarning, useCallback) |
+| 2026-03-24 | Исправлены Biome lint ошибки (useButtonType для всех кнопок)    |
+| 2026-03-24 | Исправлена ошибка noArrayIndexKey (зависимости)                |
+| 2026-04-07 | Интеграция реального project_id из backend, добавлен ручной override команды запуска, переход на bun, исправлены restart/process_log flow |
 
 ## Контроль изменений
 
 ```
-last_checked_commit: 75079bd
+last_checked_commit: ad49e25
 ```

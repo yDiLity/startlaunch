@@ -1,7 +1,7 @@
 use crate::error::{AutoLaunchError, Result};
 use crate::models::{ProcessHandle, ExecutionStatus, LogEntry};
 use crate::environment_manager::{Environment, IsolationMode};
-use std::process::{Command, Child, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
@@ -9,6 +9,7 @@ use uuid::Uuid;
 use chrono::Utc;
 use regex::Regex;
 use std::io::{BufRead, BufReader};
+use std::thread;
 
 pub struct ProcessController {
     running_processes: Arc<Mutex<HashMap<String, RunningProcess>>>,
@@ -63,6 +64,8 @@ impl ProcessController {
             processes.insert(process_id, running_process);
         }
 
+        self.capture_process_output(&handle.id);
+
         // Запускаем мониторинг процесса в фоне
         let processes_ref = Arc::clone(&self.running_processes);
         let handle_clone = handle.clone();
@@ -71,6 +74,70 @@ impl ProcessController {
         });
 
         Ok(handle)
+    }
+
+    fn capture_process_output(&self, process_id: &str) {
+        let stdout = {
+            let mut processes = self.running_processes.lock().unwrap();
+            processes
+                .get_mut(process_id)
+                .and_then(|running_process| running_process.child.as_mut())
+                .and_then(|child| child.stdout.take())
+        };
+
+        if let Some(stdout) = stdout {
+            let process_id = process_id.to_string();
+            let processes_ref = Arc::clone(&self.running_processes);
+            thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(|line| line.ok()) {
+                    let mut processes = processes_ref.lock().unwrap();
+                    if let Some(running_process) = processes.get_mut(&process_id) {
+                        running_process.logs.push(LogEntry {
+                            timestamp: Utc::now(),
+                            level: "info".to_string(),
+                            message: line,
+                        });
+                        if running_process.logs.len() > 1000 {
+                            running_process.logs.drain(0..100);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
+
+        let stderr = {
+            let mut processes = self.running_processes.lock().unwrap();
+            processes
+                .get_mut(process_id)
+                .and_then(|running_process| running_process.child.as_mut())
+                .and_then(|child| child.stderr.take())
+        };
+
+        if let Some(stderr) = stderr {
+            let process_id = process_id.to_string();
+            let processes_ref = Arc::clone(&self.running_processes);
+            thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(|line| line.ok()) {
+                    let mut processes = processes_ref.lock().unwrap();
+                    if let Some(running_process) = processes.get_mut(&process_id) {
+                        running_process.logs.push(LogEntry {
+                            timestamp: Utc::now(),
+                            level: "error".to_string(),
+                            message: line,
+                        });
+                        if running_process.logs.len() > 1000 {
+                            running_process.logs.drain(0..100);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
     }
 
     async fn start_docker_process(&self, env: &Environment, command: &str) -> Result<(Option<Child>, Vec<u16>)> {
@@ -128,23 +195,6 @@ impl ProcessController {
         Ok((Some(child), ports))
     }
 
-    /// Добавляет лог-запись для процесса
-    fn add_log_entry(&self, process_id: &str, level: &str, message: String) {
-        let mut processes = self.running_processes.lock().unwrap();
-        if let Some(running_process) = processes.get_mut(process_id) {
-            running_process.logs.push(LogEntry {
-                timestamp: Utc::now(),
-                level: level.to_string(),
-                message,
-            });
-            
-            // Ограничиваем количество логов (последние 1000)
-            if running_process.logs.len() > 1000 {
-                running_process.logs.drain(0..100);
-            }
-        }
-    }
-
     /// Публичный хелпер для тестирования детекции портов
     #[cfg(test)]
     pub fn detect_ports_from_command_test(&self, command: &str) -> Vec<u16> {
@@ -164,7 +214,7 @@ impl ProcessController {
 
         // Добавляем стандартные порты если не найдены
         if ports.is_empty() {
-            if command.contains("npm") && command.contains("start") {
+            if (command.contains("npm") || command.contains("bun")) && command.contains("start") {
                 ports.push(3000);
             } else if command.contains("python") {
                 ports.push(5000);
@@ -251,7 +301,11 @@ impl ProcessController {
         Ok(())
     }
 
-    pub async fn restart_process(&self, handle: &ProcessHandle) -> Result<()> {
+    pub async fn restart_process(
+        &self,
+        handle: &ProcessHandle,
+        command_override: Option<String>,
+    ) -> Result<ProcessHandle> {
         // Получаем информацию о процессе (Требование 6.3: Перезапуск = остановка + запуск)
         let (env, command) = {
             let processes = self.running_processes.lock().unwrap();
@@ -271,9 +325,12 @@ impl ProcessController {
         sleep(Duration::from_secs(2)).await;
 
         // Запускаем заново
-        self.start_process(&env, &command).await?;
+        let next_command = command_override
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(command);
+        let new_handle = self.start_process(&env, &next_command).await?;
 
-        Ok(())
+        Ok(new_handle)
     }
 
     pub async fn get_process_status(&self, handle: &ProcessHandle) -> Result<ExecutionStatus> {
@@ -305,11 +362,7 @@ impl ProcessController {
                 if let Some(running_process) = processes_guard.get_mut(&handle.id) {
                     // Проверяем статус процесса
                     let is_running = match &running_process.child {
-                        Some(child) => {
-                            // Для упрощения считаем что процесс работает
-                            // В реальной реализации нужно проверить child.try_wait()
-                            true
-                        }
+                        Some(child) => child.try_wait().map(|result| result.is_none()).unwrap_or(false),
                         None => {
                             // Для Docker контейнеров проверяем через docker ps
                             if let Some(container_id) = &handle.container_id {

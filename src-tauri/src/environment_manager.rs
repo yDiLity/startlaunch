@@ -72,12 +72,10 @@ impl EnvironmentManager {
         
         // Проверяем доступность Docker
         if self.is_docker_available().await {
-            // Если проект неизвестный или недоверенный, всегда используем песочницу
             if should_use_sandbox {
                 self.create_docker_environment(&env_id, project, project_path).await
             } else {
-                // Для доверенных проектов можем использовать прямой режим
-                self.create_docker_environment(&env_id, project, project_path).await
+                self.create_direct_environment(&env_id, project, project_path).await
             }
         } else {
             // Если Docker недоступен, используем прямой режим с предупреждением
@@ -252,7 +250,7 @@ impl EnvironmentManager {
     async fn install_nodejs_dependencies(&self, project_path: &Path) -> Result<()> {
         let package_json_path = project_path.join("package.json");
         if package_json_path.exists() {
-            let install_output = Command::new("npm")
+            let install_output = Command::new("bun")
                 .arg("install")
                 .current_dir(project_path)
                 .output()?;
@@ -309,11 +307,11 @@ impl EnvironmentManager {
                 format!(
                     r#"FROM node:{}-alpine
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
+COPY package.json bun.lockb* ./
+RUN bun install
 COPY . .
 EXPOSE 3000 8000 8080
-CMD ["npm", "start"]
+CMD ["bun", "run", "start"]
 "#,
                     node_version
                 )
