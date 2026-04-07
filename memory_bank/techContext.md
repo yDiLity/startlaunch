@@ -38,7 +38,7 @@
 - **Пакетный менеджер JS**: bun
 - **Rust edition**: 2021
 - **Tauri версия**: 1.x (не 2.x)
-- **Линтер**: biome (только для TS/JS файлов, не MD)
+- **Линтер**: biome (проверяем код, не Markdown)
 
 ## Команды
 
@@ -50,6 +50,10 @@ bun run tauri dev    # Tauri + Vite
 # Сборка
 bun run build
 bun run tauri build
+
+# Проверка frontend
+bunx tsc --noEmit
+bunx biome check src --write
 
 # Тесты Rust
 cd src-tauri && cargo test

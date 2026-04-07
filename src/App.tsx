@@ -9,7 +9,7 @@ import {
 	Settings,
 	Square,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ProcessWindow, {
 	type LogEntry,
 	type ProcessStage,
@@ -25,11 +25,26 @@ interface SecurityWarning {
 	suggestion: string | null;
 }
 
+interface ProjectDependency {
+	name: string;
+	version?: string | null;
+	dev?: boolean;
+}
+
+interface ProjectConfigFile {
+	path?: string;
+	file_type?: string;
+}
+
+interface UserFriendlyError {
+	user_friendly_message?: string;
+}
+
 interface ProjectInfo {
-	stack: any;
+	stack: unknown;
 	entry_command: string | null;
-	dependencies: any[];
-	config_files: any[];
+	dependencies: ProjectDependency[];
+	config_files: ProjectConfigFile[];
 	security_warnings: SecurityWarning[];
 }
 
@@ -48,6 +63,25 @@ interface AnalysisResult {
 	project_info: ProjectInfo;
 }
 
+interface BackendProcessLog {
+	timestamp: string;
+	level: string;
+	message: string;
+}
+
+interface SavedProject {
+	id: string;
+	github_url: string;
+	owner: string;
+	repo_name: string;
+	local_path: string;
+	detected_stack: string;
+	trust_level: string;
+	created_at: string;
+	last_run_at: string | null;
+	tags: string;
+}
+
 const createLogEntry = (
 	level: "info" | "warning" | "error" | "success",
 	message: string,
@@ -57,6 +91,81 @@ const createLogEntry = (
 	level,
 	message,
 });
+
+const normalizeLogLevel = (level: string): LogEntry["level"] => {
+	switch (level.toLowerCase()) {
+		case "error":
+			return "error";
+		case "warning":
+			return "warning";
+		case "success":
+			return "success";
+		default:
+			return "info";
+	}
+};
+
+const normalizeProcessLogs = (logs: BackendProcessLog[]): LogEntry[] =>
+	logs.map((log, index) => ({
+		id: `${log.timestamp}-${log.level}-${log.message}-${index}`,
+		timestamp: log.timestamp,
+		level: normalizeLogLevel(log.level),
+		message: log.message,
+	}));
+
+const mergeLogEntries = (
+	existingLogs: LogEntry[],
+	incomingLogs: LogEntry[],
+): LogEntry[] => {
+	const seenIds = new Set(existingLogs.map((entry) => entry.id));
+	const nextLogs = [...existingLogs];
+
+	for (const entry of incomingLogs) {
+		if (!seenIds.has(entry.id)) {
+			seenIds.add(entry.id);
+			nextLogs.push(entry);
+		}
+	}
+
+	return nextLogs;
+};
+
+const getStageFromStatus = (status: ProjectStatus): ProcessStage => {
+	const normalizedStatus = status.status.toLowerCase();
+
+	if (!status.running) {
+		return normalizedStatus.includes("fail") ? "failed" : "stopped";
+	}
+
+	if (normalizedStatus.includes("stopp")) {
+		return "stopping";
+	}
+
+	if (
+		normalizedStatus.includes("start") ||
+		normalizedStatus.includes("prepar")
+	) {
+		return "starting";
+	}
+
+	return "running";
+};
+
+const getProgressFromStage = (stage: ProcessStage): number => {
+	const progressMap: Record<ProcessStage, number> = {
+		cloning: 15,
+		analyzing: 55,
+		installing: 65,
+		configuring: 75,
+		starting: 85,
+		running: 100,
+		stopping: 90,
+		stopped: 100,
+		failed: 100,
+	};
+
+	return progressMap[stage];
+};
 
 function App() {
 	const [url, setUrl] = useState("");
@@ -88,33 +197,61 @@ function App() {
 	// State for manual command override
 	const [commandOverride, setCommandOverride] = useState<string>("");
 
+	const syncProjectRuntime = useCallback(async (targetProjectId: string) => {
+		try {
+			const status = await invoke<ProjectStatus>("get_project_status", {
+				project_id: targetProjectId,
+			});
+
+			setProjectStatus(status);
+
+			const nextStage = getStageFromStatus(status);
+			setProcessStage(nextStage);
+			setProcessProgress(getProgressFromStage(nextStage));
+
+			if (status.running) {
+				const rawLogs = await invoke<BackendProcessLog[]>("get_process_logs", {
+					project_id: targetProjectId,
+				});
+				const normalizedLogs = normalizeProcessLogs(rawLogs);
+				setProcessLogs((prev) => mergeLogEntries(prev, normalizedLogs));
+			}
+		} catch (err) {
+			console.error("Ошибка синхронизации состояния проекта:", err);
+		}
+	}, []);
+
+	const loadSavedProjectContext = useCallback(
+		async (targetProjectId: string) => {
+			try {
+				const projects = await invoke<SavedProject[]>("get_project_history");
+				const savedProject = projects.find(
+					(project) => project.id === targetProjectId,
+				);
+
+				if (savedProject) {
+					setCurrentRepoUrl(savedProject.github_url);
+					setUrl(savedProject.github_url);
+				}
+			} catch (err) {
+				console.error("Ошибка загрузки сохранённого проекта:", err);
+			}
+		},
+		[],
+	);
+
 	// Опрос статуса процесса и логов
 	useEffect(() => {
 		if (projectId && projectStatus?.running) {
-			const interval = setInterval(async () => {
-				try {
-					const [status, logs] = await Promise.all([
-						invoke<ProjectStatus>("get_project_status", {
-							project_id: projectId,
-						}),
-						invoke<LogEntry[]>("get_process_logs", { project_id: projectId }),
-					]);
-					setProjectStatus(status);
-					if (logs.length > 0) {
-						setProcessLogs((prev) => {
-							const existingIds = new Set(prev.map((l) => l.id));
-							const newLogs = logs.filter((l) => !existingIds.has(l.id));
-							return [...prev, ...newLogs];
-						});
-					}
-				} catch (err) {
-					console.error("Ошибка получения статуса:", err);
-				}
+			void syncProjectRuntime(projectId);
+
+			const interval = setInterval(() => {
+				void syncProjectRuntime(projectId);
 			}, 3000);
 
 			return () => clearInterval(interval);
 		}
-	}, [projectId, projectStatus?.running]);
+	}, [projectId, projectStatus?.running, syncProjectRuntime]);
 
 	const handleAnalyze = async () => {
 		if (!url.trim()) return;
@@ -130,37 +267,30 @@ function App() {
 
 		// Показываем окно процесса
 		setShowProcessWindow(true);
-		setProcessStage("analyzing");
-		setProcessProgress(10);
+		setProcessStage("cloning");
+		setProcessProgress(getProgressFromStage("cloning"));
 		setProcessLogs([
 			createLogEntry("info", `Начинаем анализ репозитория: ${url}`),
+			createLogEntry("info", "Клонирование и анализ выполняются в backend..."),
 		]);
 		setProcessError(null);
 		setProcessErrorSuggestion(null);
 
 		try {
-			// Симуляция прогресса анализа
-			setProcessProgress(30);
-			setProcessLogs((prev) => [
-				...prev,
-				createLogEntry("info", "Клонирование репозитория..."),
-			]);
-
 			const result = await invoke<AnalysisResult>("analyze_repository", {
 				url,
 			});
 
-			setProcessProgress(70);
+			setProcessStage("analyzing");
+			setProcessProgress(100);
 			setProcessLogs((prev) => [
 				...prev,
-				createLogEntry("success", "Репозиторий успешно клонирован"),
-				createLogEntry("info", "Анализ структуры проекта..."),
+				createLogEntry("success", "Репозиторий успешно проанализирован"),
 			]);
 
 			setProjectInfo(result.project_info);
 			setProjectId(result.project_id);
 
-			setProcessProgress(100);
 			setProcessLogs((prev) => [
 				...prev,
 				createLogEntry(
@@ -186,15 +316,17 @@ function App() {
 				console.error("Ошибка проверки доверия:", err);
 			}
 
-			// Скрываем окно процесса после успешного анализа
 			setTimeout(() => setShowProcessWindow(false), 2000);
-		} catch (err: any) {
+		} catch (err: unknown) {
+			const typedError = err as UserFriendlyError;
 			setError(
-				err.user_friendly_message || "Произошла ошибка при анализе репозитория",
+				typedError.user_friendly_message ||
+					"Произошла ошибка при анализе репозитория",
 			);
 			setProcessStage("failed");
 			setProcessError(
-				err.user_friendly_message || "Произошла ошибка при анализе репозитория",
+				typedError.user_friendly_message ||
+					"Произошла ошибка при анализе репозитория",
 			);
 			setProcessErrorSuggestion(
 				"Проверьте правильность URL и доступность репозитория",
@@ -203,7 +335,7 @@ function App() {
 				...prev,
 				createLogEntry(
 					"error",
-					err.user_friendly_message || "Ошибка анализа репозитория",
+					typedError.user_friendly_message || "Ошибка анализа репозитория",
 				),
 			]);
 		} finally {
@@ -217,100 +349,63 @@ function App() {
 		try {
 			await invoke("add_trusted_repository", { repo_url: currentRepoUrl });
 			setIsTrusted(true);
-		} catch (err: any) {
+		} catch (err: unknown) {
+			const typedError = err as UserFriendlyError;
 			setError(
-				err.user_friendly_message || "Ошибка при добавлении в доверенные",
+				typedError.user_friendly_message ||
+					"Ошибка при добавлении в доверенные",
 			);
 		}
 	};
 
-	const handleStart = async () => {
-		if (!projectId) return;
+	const handleStart = async (targetProjectId = projectId) => {
+		if (!targetProjectId) return;
 
 		setIsStarting(true);
 		setError(null);
 		setStartMessage(null);
+		setProjectId(targetProjectId);
 
-		// Показываем окно процесса
 		setShowProcessWindow(true);
-		setProcessStage("installing");
-		setProcessProgress(0);
+		setProcessStage("starting");
+		setProcessProgress(getProgressFromStage("starting"));
 		setProcessLogs([
-			createLogEntry("info", "Начинаем установку зависимостей..."),
+			createLogEntry("info", "Подготавливаем запуск проекта..."),
 		]);
 		setProcessError(null);
 		setProcessErrorSuggestion(null);
 
 		try {
-			// Симуляция установки зависимостей
-			setProcessProgress(20);
 			setProcessLogs((prev) => [
 				...prev,
-				createLogEntry("info", "Создание изолированного окружения..."),
-			]);
-
-			await new Promise((resolve) => setTimeout(resolve, 500));
-
-			setProcessProgress(40);
-			setProcessLogs((prev) => [
-				...prev,
-				createLogEntry("info", "Установка зависимостей npm..."),
-				createLogEntry("info", "npm install react@^18.2.0"),
-				createLogEntry("info", "npm install typescript@^5.2.2"),
-			]);
-
-			await new Promise((resolve) => setTimeout(resolve, 500));
-
-			setProcessStage("configuring");
-			setProcessProgress(60);
-			setProcessLogs((prev) => [
-				...prev,
-				createLogEntry("success", "Зависимости успешно установлены"),
-				createLogEntry("info", "Настройка окружения..."),
-			]);
-
-			await new Promise((resolve) => setTimeout(resolve, 500));
-
-			setProcessStage("starting");
-			setProcessProgress(80);
-			setProcessLogs((prev) => [
-				...prev,
-				createLogEntry("info", "Запуск приложения..."),
+				createLogEntry("info", "Команда запуска передана в backend..."),
 			]);
 
 			const message = await invoke<string>("start_project", {
-				project_id: projectId,
+				project_id: targetProjectId,
 				command_override: commandOverride || null,
 			});
 
-			setProcessProgress(100);
-			setProcessStage("running");
+			setProcessStage("starting");
+			setProcessProgress(95);
 			setProcessLogs((prev) => [
 				...prev,
-				createLogEntry("success", "Приложение успешно запущено!"),
+				createLogEntry("success", "Backend завершил запуск проекта"),
 				createLogEntry("info", message),
 			]);
 
 			setStartMessage(message);
-
-			// Получаем статус после запуска
-			setTimeout(async () => {
-				try {
-					const status = await invoke<ProjectStatus>("get_project_status", {
-						project_id: projectId,
-					});
-					setProjectStatus(status);
-				} catch (err) {
-					console.error("Ошибка получения статуса:", err);
-				}
-			}, 2000);
-		} catch (err: any) {
+			await syncProjectRuntime(targetProjectId);
+		} catch (err: unknown) {
+			const typedError = err as UserFriendlyError;
 			setError(
-				err.user_friendly_message || "Произошла ошибка при запуске проекта",
+				typedError.user_friendly_message ||
+					"Произошла ошибка при запуске проекта",
 			);
 			setProcessStage("failed");
 			setProcessError(
-				err.user_friendly_message || "Произошла ошибка при запуске проекта",
+				typedError.user_friendly_message ||
+					"Произошла ошибка при запуске проекта",
 			);
 			setProcessErrorSuggestion(
 				"Проверьте логи для получения дополнительной информации",
@@ -319,7 +414,7 @@ function App() {
 				...prev,
 				createLogEntry(
 					"error",
-					err.user_friendly_message || "Ошибка запуска проекта",
+					typedError.user_friendly_message || "Ошибка запуска проекта",
 				),
 			]);
 		} finally {
@@ -332,14 +427,29 @@ function App() {
 
 		setIsStopping(true);
 		setError(null);
+		setShowProcessWindow(true);
+		setProcessStage("stopping");
+		setProcessProgress(getProgressFromStage("stopping"));
+		setProcessLogs((prev) => [
+			...prev,
+			createLogEntry("info", "Останавливаем проект..."),
+		]);
 
 		try {
 			await invoke("stop_project", { project_id: projectId });
 			setProjectStatus({ running: false, status: "stopped" });
 			setStartMessage(null);
-		} catch (err: any) {
+			setProcessStage("stopped");
+			setProcessProgress(100);
+			setProcessLogs((prev) => [
+				...prev,
+				createLogEntry("success", "Проект остановлен"),
+			]);
+		} catch (err: unknown) {
+			const typedError = err as UserFriendlyError;
 			setError(
-				err.user_friendly_message || "Произошла ошибка при остановке проекта",
+				typedError.user_friendly_message ||
+					"Произошла ошибка при остановке проекта",
 			);
 		} finally {
 			setIsStopping(false);
@@ -353,46 +463,42 @@ function App() {
 		setError(null);
 		setShowProcessWindow(true);
 		setProcessStage("starting");
-		setProcessProgress(50);
+		setProcessProgress(getProgressFromStage("starting"));
 		setProcessLogs((prev) => [
 			...prev,
 			createLogEntry("info", "Перезапуск проекта..."),
 		]);
 
 		try {
-			const message = await invoke<string>("restart_project", {
+			await invoke("restart_project", {
 				project_id: projectId,
 				command_override: commandOverride || null,
 			});
 
-			setProcessProgress(100);
-			setProcessStage("running");
+			setProcessStage("starting");
+			setProcessProgress(95);
 			setProcessLogs((prev) => [
 				...prev,
 				createLogEntry("success", "Проект успешно перезапущен!"),
-				createLogEntry("info", message),
+				createLogEntry(
+					"info",
+					"Ожидаем подтверждение статуса после перезапуска...",
+				),
 			]);
-			setStartMessage(message);
-
-			setTimeout(async () => {
-				try {
-					const status = await invoke<ProjectStatus>("get_project_status", {
-						project_id: projectId,
-					});
-					setProjectStatus(status);
-				} catch (err) {
-					console.error("Ошибка получения статуса:", err);
-				}
-			}, 2000);
-		} catch (err: any) {
-			setError(err.user_friendly_message || "Ошибка при перезапуске проекта");
+			setStartMessage("Проект успешно перезапущен");
+			await syncProjectRuntime(projectId);
+		} catch (err: unknown) {
+			const typedError = err as UserFriendlyError;
+			setError(
+				typedError.user_friendly_message || "Ошибка при перезапуске проекта",
+			);
 			setProcessStage("failed");
-			setProcessError(err.user_friendly_message || "Ошибка перезапуска");
+			setProcessError(typedError.user_friendly_message || "Ошибка перезапуска");
 			setProcessLogs((prev) => [
 				...prev,
 				createLogEntry(
 					"error",
-					err.user_friendly_message || "Ошибка перезапуска",
+					typedError.user_friendly_message || "Ошибка перезапуска",
 				),
 			]);
 		} finally {
@@ -406,11 +512,17 @@ function App() {
 		}
 	};
 
-	const handleLaunchProjectFromManager = (launchProjectId: string) => {
+	const handleLaunchProjectFromManager = async (launchProjectId: string) => {
+		await loadSavedProjectContext(launchProjectId);
 		setProjectId(launchProjectId);
-		// В реальной реализации здесь будет загрузка информации о проекте
-		// и автоматический запуск
-		handleStart();
+		setProjectInfo(null);
+		setProjectStatus(null);
+		setError(null);
+		await handleStart(launchProjectId);
+	};
+
+	const handleStartClick = () => {
+		void handleStart();
 	};
 
 	return (
@@ -587,7 +699,7 @@ function App() {
 							) : (
 								<button
 									type="button"
-									onClick={handleStart}
+									onClick={handleStartClick}
 									disabled={isStarting}
 									className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
 								>
@@ -633,7 +745,7 @@ function App() {
 								{!projectStatus?.running && (
 									<button
 										type="button"
-										onClick={handleStart}
+										onClick={handleStartClick}
 										disabled={isStarting}
 										className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
 									>

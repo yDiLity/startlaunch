@@ -23,18 +23,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
 	const [error, setError] = useState<string | null>(null);
 	const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-	// Загрузка настроек при монтировании компонента
-	useEffect(() => {
-		loadSettings();
-	}, []);
-
-	// Применение темы к документу
-	useEffect(() => {
-		if (settings) {
-			applyTheme(settings.theme);
-		}
-	}, [settings?.theme, settings]);
-
 	const loadSettings = useCallback(async () => {
 		try {
 			setLoading(true);
@@ -62,6 +50,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
 			root.setAttribute("data-theme", theme.toLowerCase());
 		}
 	}, []);
+
+	// Загрузка настроек при монтировании компонента
+	useEffect(() => {
+		void loadSettings();
+	}, [loadSettings]);
+
+	// Применение темы к документу
+	useEffect(() => {
+		if (settings) {
+			applyTheme(settings.theme);
+		}
+	}, [applyTheme, settings]);
 
 	const handleSave = async () => {
 		if (!settings) return;

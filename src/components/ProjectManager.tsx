@@ -21,6 +21,10 @@ interface ProjectManagerProps {
 	onLaunchProject: (projectId: string) => void;
 }
 
+interface UserFriendlyError {
+	user_friendly_message?: string;
+}
+
 const ProjectManager: React.FC<ProjectManagerProps> = ({
 	onClose,
 	onLaunchProject,
@@ -34,15 +38,6 @@ const ProjectManager: React.FC<ProjectManagerProps> = ({
 	const [error, setError] = useState<string | null>(null);
 	const [editingTags, setEditingTags] = useState<string | null>(null);
 	const [newTag, setNewTag] = useState("");
-
-	useEffect(() => {
-		loadProjects();
-		loadAllTags();
-	}, []);
-
-	useEffect(() => {
-		filterProjects();
-	}, [projects, searchQuery, selectedTags]);
 
 	const loadProjects = useCallback(async () => {
 		try {
@@ -92,6 +87,15 @@ const ProjectManager: React.FC<ProjectManagerProps> = ({
 		setFilteredProjects(filtered);
 	}, [projects, searchQuery, selectedTags]);
 
+	useEffect(() => {
+		void loadProjects();
+		void loadAllTags();
+	}, [loadAllTags, loadProjects]);
+
+	useEffect(() => {
+		filterProjects();
+	}, [filterProjects]);
+
 	const handleDeleteProject = async (projectId: string) => {
 		if (!confirm("Вы уверены, что хотите удалить этот проект?")) {
 			return;
@@ -139,8 +143,9 @@ const ProjectManager: React.FC<ProjectManagerProps> = ({
 			await loadProjects();
 			await loadAllTags();
 			setNewTag("");
-		} catch (err: any) {
-			setError(err.user_friendly_message || "Ошибка добавления тега");
+		} catch (err: unknown) {
+			const error = err as UserFriendlyError;
+			setError(error.user_friendly_message || "Ошибка добавления тега");
 		}
 	};
 
@@ -158,8 +163,9 @@ const ProjectManager: React.FC<ProjectManagerProps> = ({
 
 			await loadProjects();
 			await loadAllTags();
-		} catch (err: any) {
-			setError(err.user_friendly_message || "Ошибка удаления тега");
+		} catch (err: unknown) {
+			const error = err as UserFriendlyError;
+			setError(error.user_friendly_message || "Ошибка удаления тега");
 		}
 	};
 

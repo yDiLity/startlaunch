@@ -59,6 +59,12 @@ pub enum AutoLaunchError {
 2. Rust обрабатывает в `commands.rs`
 3. Результат возвращается как `Result<T, String>`
 
+### Runtime Status Polling
+- `src/App.tsx` хранит `project_id`, полученный из `analyze_repository`
+- После запуска frontend регулярно опрашивает `get_project_status` и `get_process_logs`
+- `ProcessWindow` отображает backend-driven стадии выполнения и реальные логи процесса
+- Перезапуск выполняется через backend-команду `restart_project`, а не через UI-симуляцию
+
 ### База данных
 - SQLite через `sqlx` с async runtime
 - Таблицы: `projects`, `snapshots`, `executions`, `logs`

@@ -2,13 +2,12 @@
 
 ## Что готово
 
-### D14: Финальная проверка ✅
+### D14: Финальная проверка ⚠️
 
-- TypeScript: только warnings (неиспользуемые переменные) — не критично
-- Cargo tests: требуют MSVC linker (не установлен в окружении)
-- Все 13 основных задач завершены
-- Все property-based тесты реализованы
-- Все интеграционные тесты реализованы
+- Frontend build и TypeScript проходят в текущем окружении
+- Полная Rust/Tauri verification заблокирована отсутствием MSVC linker / Visual Studio
+- Все 13 основных задач реализации присутствуют в кодовой базе
+- Property-based и интеграционные тесты присутствуют в кодовой базе
 
 ### Все задачи из tasks.md — ЗАВЕРШЕНЫ
 
@@ -47,6 +46,7 @@
 ## Known Issues
 
 - Сборка Tauri требует Visual Studio с компонентом "Desktop development with C++" (link.exe не найден)
+- `D14` имеет статус `blocked`, пока полная Rust/Tauri verification не подтверждена в рабочем Windows-окружении
 
 ## Changelog
 
@@ -71,9 +71,12 @@
 | 2026-03-24 | Исправлены Biome lint ошибки (useButtonType для всех кнопок)    |
 | 2026-03-24 | Исправлена ошибка noArrayIndexKey (зависимости)                |
 | 2026-04-07 | Интеграция реального project_id из backend, добавлен ручной override команды запуска, переход на bun, исправлены restart/process_log flow |
+| 2026-04-07 | Убран оставшийся simulated UI flow в `src/App.tsx`, запуск из истории переведён на реальный backend status/log polling |
+| 2026-04-07 | Создан `docs/README.md` как канонический архитектурный документ, синхронизированы `README.md` и Memory Bank |
+| 2026-04-07 | Deliverable D14 переведён в `blocked` из-за ограничений Windows Tauri/Rust verification |
 
 ## Контроль изменений
 
 ```
-last_checked_commit: b6ddd81
+last_checked_commit: 798b0ab
 ```
