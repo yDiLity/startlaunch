@@ -75,5 +75,5 @@
 ## Контроль изменений
 
 ```
-last_checked_commit: ad49e25
+last_checked_commit: b6ddd81
 ```
